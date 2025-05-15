@@ -3,4 +3,4 @@ pandas
 alpaca-trade-api
 flask
 pandas
-alpaca-trade-app
+alpaca-trade-api
