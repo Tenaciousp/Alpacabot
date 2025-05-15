@@ -19,7 +19,7 @@ def keep_alive():
     t.start()
 @app.route('/')
 def home():
-    return "Bot is alive!"y
+    return "Bot is alive!"
 
 # === SETTINGS ===
 USE_LIVE = False  # Set to True for live trading
@@ -180,4 +180,3 @@ def run_bot():
 # === RUN ===
 keep_alive()
 run_bot()
-# test push
