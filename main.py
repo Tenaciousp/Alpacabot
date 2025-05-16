@@ -1,137 +1,150 @@
 import os
 import time
+import logging
 from datetime import datetime, date
 from threading import Thread
 from flask import Flask
-import pandas as pd
+import smtplib
+from email.mime.text import MIMEText
 import alpaca_trade_api as tradeapi
+import pandas as pd
 
-# === CONFIG ===
+# === CONFIGURATION ===
+MAX_TRADE_DOLLARS = 100
+SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
+RSI_PERIOD = 14
+EMA_PERIOD = 9
+RSI_THRESHOLD = 30
+
+# === ENV VARS ===
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL") or "https://paper-api.alpaca.markets"
-MAX_TRADE_DOLLARS = 100  # Paper trading cap per trade
-SYMBOLS = ["AAPL", "TSLA", "MSFT"]  # Add more as needed
+BASE_URL = "https://paper-api.alpaca.markets"
 
-# === SETUP ===
-api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version="v2")
-app = Flask(__name__)
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
+EMAIL_TO = os.getenv("EMAIL_TO")
+
+# === INITIALISE API ===
+api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
+
+# === LOGGING SETUP ===
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+
+# === TRACKERS ===
 traded_today = {}
 last_summary_sent = None
 
-# === KEEP ALIVE ===
+# === FLASK SERVER ===
+app = Flask(__name__)
+
 @app.route('/')
-def home():
-    return "Alpacabot is running."
+def index():
+    return "Alpaca RSI/EMA Bot is active."
 
-def keep_alive():
-    app.run(host='0.0.0.0', port=8080)
+# === FUNCTIONS ===
 
-# === FETCHING DATA ===
 def get_data(symbol):
     try:
-        bars = api.get_bars(symbol, timeframe="1Min", limit=100).df
-        if bars.empty:
-            print(f"[DATA] No data returned for {symbol}", flush=True)
+        barset = api.get_bars(symbol, '5Min', limit=100).df
+        if barset.empty or 'close' not in barset.columns:
+            logging.warning(f"[DATA] Invalid data for {symbol}")
             return None
-        bars['EMA_9'] = bars['close'].ewm(span=9).mean()
-        bars['RSI'] = compute_rsi(bars['close'], 14)
-        return bars
+        return barset
     except Exception as e:
-        print(f"[ERROR] Failed to get data for {symbol}: {e}", flush=True)
+        logging.error(f"[DATA ERROR] {symbol}: {e}")
         return None
 
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0).rolling(window=period).mean()
-    loss = -delta.clip(upper=0).rolling(window=period).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-# === SIGNAL LOGIC ===
 def signal(df):
     try:
+        df['EMA'] = df['close'].ewm(span=EMA_PERIOD).mean()
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=RSI_PERIOD).mean()
+        avg_loss = loss.rolling(window=RSI_PERIOD).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
         latest = df.iloc[-1]
-        if latest['RSI'] < 30 and latest['close'] > latest['EMA_9']:
-            return True
-        return False
+        return latest['RSI'] < RSI_THRESHOLD and latest['close'] > latest['EMA']
     except Exception as e:
-        print(f"[ERROR] Signal check failed: {e}", flush=True)
+        logging.error(f"[SIGNAL ERROR] {e}")
         return False
 
-# === ORDER LOGIC ===
-def place_order(symbol, max_dollars):
+def place_order(symbol, dollars):
     try:
-        latest_price = api.get_last_trade(symbol).price
-        qty = int(max_dollars / latest_price)
-        if qty == 0:
-            print(f"[ORDER] Price too high to buy {symbol} with ${max_dollars}", flush=True)
-            return
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side='buy',
-            type='market',
-            time_in_force='day',
-        )
-        print(f"[ORDER] Buy {qty} shares of {symbol} at ~${latest_price}", flush=True)
+        price = api.get_last_trade(symbol).price
+        qty = int(dollars / price)
+        if qty > 0:
+            api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+            logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ${price}")
+        else:
+            logging.warning(f"[ORDER] Calculated quantity is 0 for {symbol} at price ${price}")
     except Exception as e:
-        print(f"[ERROR] Order failed for {symbol}: {e}", flush=True)
+        logging.error(f"[ORDER ERROR] {symbol}: {e}")
 
 def get_open_positions():
     try:
         positions = api.list_positions()
-        for p in positions:
-            print(f"[POSITION] {p.symbol} - Qty: {p.qty}, Entry: {p.avg_entry_price}, Current: {p.current_price}", flush=True)
+        for pos in positions:
+            logging.info(f"[POSITION] {pos.symbol}: {pos.qty} shares at ${pos.avg_entry_price}")
     except Exception as e:
-        print(f"[ERROR] Failed to get positions: {e}", flush=True)
+        logging.error(f"[POSITION ERROR] {e}")
 
-# === DAILY SUMMARY (for logging only) ===
 def send_daily_summary():
     try:
-        print("[SUMMARY] Daily summary sent (placeholder)", flush=True)
+        positions = api.list_positions()
+        message = "\n".join([f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price}" for p in positions]) or "No open positions."
+        msg = MIMEText(message)
+        msg['Subject'] = 'Daily Alpaca Bot Summary'
+        msg['From'] = EMAIL_USER
+        msg['To'] = EMAIL_TO
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
+
+        logging.info("[EMAIL] Summary sent.")
     except Exception as e:
-        print(f"[ERROR] Failed to send summary: {e}", flush=True)
+        logging.error(f"[EMAIL ERROR] {e}")
 
 # === MAIN BOT LOOP ===
 def run_bot():
     global last_summary_sent
-    print("[BOT] Starting RSI/EMA bot loop...", flush=True)
+    logging.info("[BOT] Starting RSI/EMA bot loop")
     send_daily_summary()
-
     while True:
-        print(f"[BOT LOOP] Tick at {datetime.now().isoformat()}", flush=True)
-
-        now = datetime.now()
+        logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
         today = date.today()
-
         for symbol in SYMBOLS:
             if traded_today.get(symbol) == today:
-                print(f"[BOT] Already traded {symbol} today. Skipping.", flush=True)
+                logging.info(f"[BOT] {symbol} already traded today. Skipping.")
                 continue
 
-            print(f"[BOT] Checking {symbol}...", flush=True)
+            logging.info(f"[BOT] Checking {symbol}")
             df = get_data(symbol)
             if df is not None and signal(df):
                 place_order(symbol, MAX_TRADE_DOLLARS)
                 traded_today[symbol] = today
             else:
-                print(f"[BOT] No signal for {symbol}.", flush=True)
+                logging.info(f"[BOT] No signal for {symbol}.")
 
         get_open_positions()
 
-        if now.hour == 0 and last_summary_sent != today:
+        if datetime.now().hour == 0 and last_summary_sent != today:
             send_daily_summary()
             last_summary_sent = today
 
-        print("[BOT] Sleeping 5 minutes...\n", flush=True)
+        logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
 
-# === RUN ===
+# === START ===
+def keep_alive():
+    app.run(host="0.0.0.0", port=8080)
+
 if __name__ == '__main__':
-    keep_alive()
+    server_thread = Thread(target=keep_alive)
+    server_thread.start()
 
     bot_thread = Thread(target=run_bot)
-    bot_thread.daemon = False  # Required for long-running operation
     bot_thread.start()
