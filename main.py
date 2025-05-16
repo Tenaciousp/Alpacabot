@@ -64,6 +64,9 @@ def get_data(symbol):
     return df
 
 def signal(df):
+    if len(df) < 2:
+        return False  # Not enough data to evaluate signal
+
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     return (
