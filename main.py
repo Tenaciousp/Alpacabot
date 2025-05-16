@@ -161,9 +161,10 @@ def run_bot():
         today = date.today()
 
         for symbol in SYMBOLS:
-            if traded_today.get(symbol) == today:
-                print(f"Already traded {symbol} today. Skipping...")
-                continue
+            # Temporarily disabled trade limiter for testing
+            # if traded_today.get(symbol) == today:
+            #     print(f"Already traded {symbol} today. Skipping...")
+            print(f"\nChecking {symbol}...")
 
             print(f"\nChecking {symbol}...")
             df = get_data(symbol)
