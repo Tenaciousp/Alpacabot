@@ -14,17 +14,17 @@ app = Flask(__name__)
 def run():
     app.run(host='0.0.0.0', port=8080)
 
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
 def keep_alive():
     t = Thread(target=run)
     t.daemon = True
     t.start()
 
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
 # === SETTINGS ===
-USE_LIVE = False  # Set to True for live trading
+USE_LIVE = False
 BASE_URL = 'https://paper-api.alpaca.markets' if not USE_LIVE else 'https://api.alpaca.markets'
 API_KEY = os.environ.get('ALPACA_API_KEY')
 API_SECRET = os.environ.get('ALPACA_SECRET_KEY')
@@ -38,43 +38,45 @@ last_summary_sent = None
 
 # === STRATEGY ===
 def get_data(symbol):
-    barset = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=100)
-    df = barset.df
+    try:
+        barset = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=100)
+        df = barset.df
+        if df.empty:
+            print(f"[DATA] No data returned for {symbol}")
+            return None
 
-    if df.empty or 'close' not in df.columns:
-        print(f"Error: 'close' not found in data for {symbol}")
+        if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
+            df = df[df.index.get_level_values('symbol') == symbol]
+        df = df.reset_index()
+
+        print(f"[DATA] Retrieved {len(df)} bars for {symbol}")
+        df['EMA_9'] = df['close'].ewm(span=9).mean()
+        df['EMA_21'] = df['close'].ewm(span=21).mean()
+
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        return df
+
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch/process data for {symbol}: {e}")
         return None
 
-    if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
-        df = df[df.index.get_level_values('symbol') == symbol]
-
-    df = df.reset_index()
-
-    df['EMA_9'] = df['close'].ewm(span=9).mean()
-    df['EMA_21'] = df['close'].ewm(span=21).mean()
-
-    delta = df['close'].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df['RSI'] = 100 - (100 / (1 + rs))
-
-    return df
-
 def signal(df):
-    if df is None or len(df) < 2:
+    try:
+        latest = df.iloc[-1]
+        prev = df.iloc[-2]
+        if prev['EMA_9'] < prev['EMA_21'] and latest['EMA_9'] > latest['EMA_21'] and prev['RSI'] < 30 and latest['RSI'] > 30:
+            print("[SIGNAL] Buy signal detected.")
+            return True
         return False
-
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    return (
-        prev['EMA_9'] < prev['EMA_21'] and
-        latest['EMA_9'] > latest['EMA_21'] and
-        prev['RSI'] < 50 and latest['RSI'] > 50
-    )
+    except Exception as e:
+        print(f"[ERROR] Failed to evaluate signal: {e}")
+        return False
 
 # === PLACE ORDER ===
 def place_order(symbol, max_dollars):
@@ -82,9 +84,8 @@ def place_order(symbol, max_dollars):
         price = api.get_latest_trade(symbol).price
         qty = int(max_dollars / price)
         if qty < 1:
-            print(f"Skipped {symbol}: too expensive for ${max_dollars}")
+            print(f"[ORDER] Skipped {symbol}: too expensive for ${max_dollars}")
             return
-
         take_profit = round(price * 1.05, 2)
         stop_loss = round(price * 0.97, 2)
 
@@ -99,25 +100,23 @@ def place_order(symbol, max_dollars):
             stop_loss={'stop_price': stop_loss}
         )
 
-        print(f"Bracket order placed: BUY {qty} of {symbol} at ${price:.2f}")
-        print(f" --> Take Profit at ${take_profit}")
-        print(f" --> Stop Loss at ${stop_loss}")
+        print(f"[ORDER] Bracket order placed: BUY {qty} of {symbol} at ${price:.2f}, TP ${take_profit}, SL ${stop_loss}")
 
     except Exception as e:
-        print(f"Order failed for {symbol}:", e)
+        print(f"[ERROR] Order failed for {symbol}: {e}")
 
-# === OPEN POSITIONS ===
+# === POSITIONS ===
 def get_open_positions():
     try:
         positions = api.list_positions()
         if positions:
-            print("Open positions:")
+            print("[POSITIONS] Open positions:")
             for p in positions:
-                print(f"{p.symbol}: {p.qty} @ {p.avg_entry_price}")
+                print(f" - {p.symbol}: {p.qty} shares at {p.avg_entry_price}")
         else:
-            print("No open positions.")
+            print("[POSITIONS] No open positions.")
     except Exception as e:
-        print("Error checking positions:", e)
+        print(f"[ERROR] Error checking positions: {e}")
 
 # === DAILY SUMMARY ===
 def send_daily_summary():
@@ -130,14 +129,15 @@ def send_daily_summary():
         ]
 
         if not summary_lines:
-            print("No trades today to summarize.")
+            print("[SUMMARY] No trades today to summarize.")
             return
 
-        summary = "\n".join(summary_lines)
-        send_email("Daily Trading Summary", f"Today's Trades:\n\n{summary}")
-        print("Daily summary email sent.")
+        body = "Daily Trading Summary\n\nTrades:\n" + "\n".join(summary_lines)
+        send_email("Trading Summary", body)
+        print("[SUMMARY] Daily summary email sent.")
+
     except Exception as e:
-        print("Failed to send summary:", e)
+        print(f"[ERROR] Failed to send summary: {e}")
 
 def send_email(subject, body):
     sender = os.environ.get('EMAIL_SENDER')
@@ -149,35 +149,35 @@ def send_email(subject, body):
     msg['To'] = recipient
     msg['Subject'] = subject
 
-    with smtplib.SMTP('smtp.office365.com', 587) as server:
-        server.starttls()
-        server.login(sender, password)
-        server.sendmail(sender, recipient, msg.as_string())
+    try:
+        with smtplib.SMTP("smtp.office365.com", 587) as server:
+            server.starttls()
+            server.login(sender, password)
+            server.sendmail(sender, recipient, msg.as_string())
+    except Exception as e:
+        print(f"[EMAIL ERROR] Could not send email: {e}")
 
 # === MAIN LOOP ===
 def run_bot():
     global last_summary_sent
-
-    print("Running Alpaca RSI/EMA bot on paper...")
+    print("[BOT] Starting Alpaca RSI/EMA bot...")
     send_daily_summary()
 
     while True:
         now = datetime.now()
         today = date.today()
-
         for symbol in SYMBOLS:
             if traded_today.get(symbol) == today:
-                print(f"Already traded {symbol} today. Skipping...")
+                print(f"[BOT] Already traded {symbol} today. Skipping.")
                 continue
 
-            print(f"\nChecking {symbol}...")
+            print(f"[BOT] Checking {symbol}...")
             df = get_data(symbol)
-            if signal(df):
-                print(f"Buy signal detected for {symbol}!")
+            if df is not None and signal(df):
                 place_order(symbol, MAX_TRADE_DOLLARS)
                 traded_today[symbol] = today
             else:
-                print(f"No signal for {symbol}.")
+                print(f"[BOT] No signal for {symbol}.")
 
         get_open_positions()
 
@@ -185,7 +185,7 @@ def run_bot():
             send_daily_summary()
             last_summary_sent = today
 
-        print("\nSleeping 5 minutes...\n")
+        print("[BOT] Sleeping 5 minutes...\n")
         time.sleep(300)
 
 # === RUN ===
