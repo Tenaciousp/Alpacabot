@@ -64,14 +64,11 @@ def get_data(symbol):
     return df
 
 def signal(df):
-    if df.empty or len(df) < 2:
-        return False
     latest = df.iloc[-1]
     prev = df.iloc[-2]
     return (
-        prev['EMA_9'] < prev['EMA_21'] and
-        latest['EMA_9'] > latest['EMA_21'] and
-        prev['RSI'] < 30 and latest['RSI'] > 30
+        latest['EMA_9'] > latest['EMA_21']
+        or latest['RSI'] > 50
     )
 
 # === PLACE ORDER ===
