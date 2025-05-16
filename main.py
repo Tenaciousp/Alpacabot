@@ -164,6 +164,7 @@ def run_bot():
     send_daily_summary()
 
     while True:
+        print(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
         now = datetime.now()
         today = date.today()
         for symbol in SYMBOLS:
@@ -190,4 +191,8 @@ def run_bot():
 
 # === RUN ===
 keep_alive()
-run_bot()
+
+# Start the bot loop in a background thread so Flask stays responsive
+bot_thread = Thread(target=run_bot)
+bot_thread.daemon = True
+bot_thread.start()
