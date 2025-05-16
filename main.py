@@ -31,7 +31,7 @@ API_SECRET = os.environ.get('ALPACA_SECRET_KEY')
 
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
-MAX_TRADE_DOLLARS = 5
+MAX_TRADE_DOLLARS = 100
 traded_today = {}
 last_summary_sent = None
 
