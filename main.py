@@ -36,7 +36,7 @@ last_summary_sent = None
 
 # === STRATEGY ===
 def get_data(symbol):
-    barset = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=100)
+    barset = api.get_bars(symbol, tradeapi.TimeFrame.Minute, limit=100, feed='iex')
     df = barset.df
 
     # Check if it's a MultiIndex and filter by symbol if needed
