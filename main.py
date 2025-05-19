@@ -23,8 +23,8 @@ API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = "https://paper-api.alpaca.markets"
 
-EMAIL_USER = os.getenv("EMAIL_USER")
-EMAIL_PASS = os.getenv("EMAIL_PASS")
+EMAIL_USER = os.getenv("EMAIL_USER")       # Your Gmail address
+EMAIL_PASS = os.getenv("EMAIL_PASS")       # Gmail App Password
 EMAIL_TO = os.getenv("EMAIL_TO")
 
 TRADE_LOG_FILE = "trade_log.csv"
@@ -117,8 +117,7 @@ def send_trade_email(symbol, qty, side):
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
 
-        with smtplib.SMTP('smtp.office365.com', 587) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info(f"[EMAIL] Trade alert sent for {symbol}.")
@@ -151,8 +150,7 @@ def send_daily_summary():
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
 
-        with smtplib.SMTP('smtp.office365.com', 587) as server:
-            server.starttls()
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info("[EMAIL] Daily summary sent.")
@@ -176,7 +174,6 @@ def run_bot():
                 latest = df.iloc[-1]
                 qty = None
 
-                # Buy signal
                 if traded_today.get(symbol) != today:
                     if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
                         price = latest['close']
@@ -187,7 +184,6 @@ def run_bot():
                         else:
                             logging.warning(f"[ORDER] Not enough capital for {symbol}. Price: {price}")
 
-                # Sell signal
                 if symbol in open_positions and sold_today.get(symbol) != today:
                     position = open_positions[symbol]
                     qty = int(position.qty)
@@ -197,7 +193,7 @@ def run_bot():
                         place_order(symbol, qty, 'sell')
                         sold_today[symbol] = today
 
-            time.sleep(1)  # Rate limit guard
+            time.sleep(1)  # Rate limit protection
 
         if datetime.now().hour == 0 and last_summary_sent != today:
             send_daily_summary()
