@@ -1,12 +1,15 @@
 import os
 import time
 import logging
+import json
 from datetime import datetime, date
 from threading import Thread
 from flask import Flask
 import smtplib
 from email.mime.text import MIMEText
 import alpaca_trade_api as tradeapi
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 
 # === CONFIGURATION ===
@@ -17,7 +20,7 @@ EMA_PERIOD = 9
 RSI_BUY = 30
 RSI_SELL = 70
 HARD_STOP_LOSS_PCT = 0.03
-MAX_TOTAL_TRADES_PER_DAY = 2  # NEW
+MAX_TOTAL_TRADES_PER_DAY = 2
 
 # === ENV VARS ===
 PAPER = os.getenv("PAPER", "true").lower() == "true"
@@ -28,21 +31,18 @@ API_SECRET = os.getenv("APCA_API_SECRET_KEY")
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
-
 TRADE_LOG_FILE = "trade_log.csv"
+GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 # === INITIALISE API ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 # === LOGGING SETUP ===
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
 traded_today = {}
 sold_today = {}
-trade_count_today = 0  # NEW
+trade_count_today = 0
 last_summary_sent = None
 
 # === FLASK SERVER ===
@@ -56,7 +56,17 @@ def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
     with open(TRADE_LOG_FILE, "a") as f:
         f.write(f"{time_str},{action},{symbol},{qty},{price}\n")
-    logging.info(f"[TRADE LOG] {action} {qty} {symbol} @ {price:.2f}")
+
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("Alpaca Trade Log").sheet1
+        sheet.append_row([time_str, action, symbol, qty, price])
+        logging.info(f"[GOOGLE SHEETS] Logged {action} {symbol} to Google Sheet.")
+    except Exception as e:
+        logging.error(f"[SHEETS ERROR] {e}")
 
 def get_data(symbol):
     try:
@@ -88,15 +98,9 @@ def place_order(symbol, qty, side):
     global trade_count_today
     try:
         if trade_count_today >= MAX_TOTAL_TRADES_PER_DAY:
-            logging.info("[LIMIT] Max daily trades reached. Skipping new orders.")
+            logging.info("[LIMIT] Max daily trades reached.")
             return
-        api.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side=side,
-            type='market',
-            time_in_force='day'
-        )
+        api.submit_order(symbol=symbol, qty=qty, side=side, type='market', time_in_force='day')
         price = api.get_last_trade(symbol).price
         log_trade(side, symbol, qty, price)
         send_trade_email(symbol, qty, side)
@@ -134,16 +138,11 @@ def send_daily_summary():
     try:
         positions = api.list_positions()
         total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
-
-        lines = [
-            f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}"
-            for p in positions
-        ]
+        lines = [f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}" for p in positions]
 
         message = (
             "Open positions:\n" + "\n".join(lines) +
-            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\n"
-            f"Trades Executed Today: {trade_count_today}"
+            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\nTrades Executed Today: {trade_count_today}"
         ) if positions else "No open positions."
 
         account = api.get_account()
@@ -158,7 +157,7 @@ def send_daily_summary():
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info("[EMAIL] Daily summary sent.")
-        trade_count_today = 0  # reset counter for next day
+        trade_count_today = 0
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
@@ -181,7 +180,6 @@ def run_bot():
                 df = calculate_signals(df)
                 latest = df.iloc[-1]
 
-                # Buy logic
                 if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
                     price = latest['close']
                     qty = int(MAX_TRADE_DOLLARS / price)
@@ -189,9 +187,8 @@ def run_bot():
                         place_order(symbol, qty, 'buy')
                         traded_today[symbol] = today
                     else:
-                        logging.warning(f"[ORDER] Skipped {symbol}, price too high for capital.")
+                        logging.warning(f"[ORDER] {symbol}: price too high for ${MAX_TRADE_DOLLARS}")
 
-                # Sell logic
                 if symbol in open_positions and sold_today.get(symbol) != today:
                     position = open_positions[symbol]
                     qty = int(position.qty)
