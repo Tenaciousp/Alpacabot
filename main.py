@@ -129,12 +129,22 @@ def send_daily_summary():
     try:
         positions = api.list_positions()
         total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
-        total_real = sum([float(p.realized_pl) for p in positions]) if positions else 0
-        lines = [f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}" for p in positions]
+        # realized_pl is NOT present on Position, so we skip it
+        lines = [
+            f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}"
+            for p in positions
+        ]
         message = (
-            "Open positions:\n" + "\n".join(lines) + 
-            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\nTotal Realized P&L: ${total_real:.2f}"
+            "Open positions:\n" + "\n".join(lines) +
+            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\n"
         ) if positions else "No open positions."
+
+        # Optionally add account-level realized P&L
+        try:
+            account = api.get_account()
+            message += f"Account Equity: ${account.equity}\n"
+        except Exception as e:
+            logging.warning(f"[ACCOUNT] Unable to fetch account equity: {e}")
 
         msg = MIMEText(message)
         msg['Subject'] = 'Daily Alpaca Bot Summary'
@@ -185,6 +195,8 @@ def run_bot():
                     if (latest['RSI'] > RSI_SELL) or (latest['close'] < stop_loss_price):
                         place_order(symbol, qty, 'sell')
                         sold_today[symbol] = today
+
+            time.sleep(1)  # Prevent Alpaca API rate limit
 
         # Daily summary after midnight
         if datetime.now().hour == 0 and last_summary_sent != today:
