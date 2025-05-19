@@ -4,3 +4,5 @@ alpaca-trade-api
 flask
 pandas
 alpaca-trade-api
+gspread
+oauth2client
