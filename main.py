@@ -10,21 +10,23 @@ import alpaca_trade_api as tradeapi
 import pandas as pd
 
 # === CONFIGURATION ===
-MAX_TRADE_DOLLARS = 100
+MAX_TRADE_DOLLARS = 50
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
 RSI_PERIOD = 14
 EMA_PERIOD = 9
 RSI_BUY = 30
 RSI_SELL = 70
-HARD_STOP_LOSS_PCT = 0.03  # 3% stop-loss
+HARD_STOP_LOSS_PCT = 0.03
+MAX_TOTAL_TRADES_PER_DAY = 2  # NEW
 
 # === ENV VARS ===
+PAPER = os.getenv("PAPER", "true").lower() == "true"
+BASE_URL = "https://paper-api.alpaca.markets" if PAPER else "https://api.alpaca.markets"
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = "https://paper-api.alpaca.markets"
 
-EMAIL_USER = os.getenv("EMAIL_USER")       # Your Gmail address
-EMAIL_PASS = os.getenv("EMAIL_PASS")       # Gmail App Password
+EMAIL_USER = os.getenv("EMAIL_USER")
+EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
 TRADE_LOG_FILE = "trade_log.csv"
@@ -40,23 +42,21 @@ logging.basicConfig(
 
 traded_today = {}
 sold_today = {}
+trade_count_today = 0  # NEW
 last_summary_sent = None
 
-# === FLASK SERVER (for keep-alive pings) ===
+# === FLASK SERVER ===
 app = Flask(__name__)
 
 @app.route('/')
 def index():
     return "Alpaca RSI/EMA Bot is active."
 
-# === TRADE LOGGING ===
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
     with open(TRADE_LOG_FILE, "a") as f:
         f.write(f"{time_str},{action},{symbol},{qty},{price}\n")
     logging.info(f"[TRADE LOG] {action} {qty} {symbol} @ {price:.2f}")
-
-# === UTILITY FUNCTIONS ===
 
 def get_data(symbol):
     try:
@@ -85,7 +85,11 @@ def calculate_signals(df):
         return df
 
 def place_order(symbol, qty, side):
+    global trade_count_today
     try:
+        if trade_count_today >= MAX_TOTAL_TRADES_PER_DAY:
+            logging.info("[LIMIT] Max daily trades reached. Skipping new orders.")
+            return
         api.submit_order(
             symbol=symbol,
             qty=qty,
@@ -93,16 +97,17 @@ def place_order(symbol, qty, side):
             type='market',
             time_in_force='day'
         )
-        logging.info(f"[ORDER] Placed {side.upper()} order for {qty} shares of {symbol}")
-        log_trade(side, symbol, qty, api.get_last_trade(symbol).price)
+        price = api.get_last_trade(symbol).price
+        log_trade(side, symbol, qty, price)
         send_trade_email(symbol, qty, side)
+        trade_count_today += 1
+        logging.info(f"[ORDER] {side.upper()} {qty} shares of {symbol} at ${price:.2f}")
     except Exception as e:
         logging.error(f"[ORDER ERROR] {symbol}: {e}")
 
 def get_open_positions_dict():
     try:
-        positions = api.list_positions()
-        return {p.symbol: p for p in positions}
+        return {p.symbol: p for p in api.list_positions()}
     except Exception as e:
         logging.error(f"[POSITION ERROR] {e}")
         return {}
@@ -125,6 +130,7 @@ def send_trade_email(symbol, qty, side):
         logging.error(f"[EMAIL ERROR] {e}")
 
 def send_daily_summary():
+    global trade_count_today
     try:
         positions = api.list_positions()
         total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
@@ -137,13 +143,11 @@ def send_daily_summary():
         message = (
             "Open positions:\n" + "\n".join(lines) +
             f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\n"
+            f"Trades Executed Today: {trade_count_today}"
         ) if positions else "No open positions."
 
-        try:
-            account = api.get_account()
-            message += f"\nAccount Equity: ${account.equity}"
-        except Exception as e:
-            logging.warning(f"[ACCOUNT] Unable to fetch account equity: {e}")
+        account = api.get_account()
+        message += f"\nAccount Equity: ${account.equity}"
 
         msg = MIMEText(message)
         msg['Subject'] = 'Daily Alpaca Bot Summary'
@@ -154,10 +158,10 @@ def send_daily_summary():
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info("[EMAIL] Daily summary sent.")
+        trade_count_today = 0  # reset counter for next day
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
-# === MAIN BOT LOOP ===
 def run_bot():
     global last_summary_sent
     logging.info("[BOT] Starting RSI/EMA bot loop")
@@ -168,22 +172,26 @@ def run_bot():
         open_positions = get_open_positions_dict()
 
         for symbol in SYMBOLS:
+            if traded_today.get(symbol) == today:
+                logging.info(f"[SKIP] {symbol} already traded today.")
+                continue
+
             df = get_data(symbol)
             if df is not None:
                 df = calculate_signals(df)
                 latest = df.iloc[-1]
-                qty = None
 
-                if traded_today.get(symbol) != today:
-                    if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
-                        price = latest['close']
-                        qty = int(MAX_TRADE_DOLLARS / price)
-                        if qty > 0:
-                            place_order(symbol, qty, 'buy')
-                            traded_today[symbol] = today
-                        else:
-                            logging.warning(f"[ORDER] Not enough capital for {symbol}. Price: {price}")
+                # Buy logic
+                if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
+                    price = latest['close']
+                    qty = int(MAX_TRADE_DOLLARS / price)
+                    if qty > 0:
+                        place_order(symbol, qty, 'buy')
+                        traded_today[symbol] = today
+                    else:
+                        logging.warning(f"[ORDER] Skipped {symbol}, price too high for capital.")
 
+                # Sell logic
                 if symbol in open_positions and sold_today.get(symbol) != today:
                     position = open_positions[symbol]
                     qty = int(position.qty)
@@ -193,7 +201,7 @@ def run_bot():
                         place_order(symbol, qty, 'sell')
                         sold_today[symbol] = today
 
-            time.sleep(1)  # Rate limit protection
+            time.sleep(1)
 
         if datetime.now().hour == 0 and last_summary_sent != today:
             send_daily_summary()
@@ -208,6 +216,5 @@ def keep_alive():
 if __name__ == '__main__':
     server_thread = Thread(target=keep_alive, daemon=True)
     server_thread.start()
-
     bot_thread = Thread(target=run_bot, daemon=False)
     bot_thread.start()
