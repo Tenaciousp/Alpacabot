@@ -102,8 +102,7 @@ def place_order(symbol, qty, side):
 def get_open_positions_dict():
     try:
         positions = api.list_positions()
-        pos_dict = {p.symbol: p for p in positions}
-        return pos_dict
+        return {p.symbol: p for p in positions}
     except Exception as e:
         logging.error(f"[POSITION ERROR] {e}")
         return {}
@@ -118,7 +117,8 @@ def send_trade_email(symbol, qty, side):
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
 
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        with smtplib.SMTP('smtp.office365.com', 587) as server:
+            server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info(f"[EMAIL] Trade alert sent for {symbol}.")
@@ -129,20 +129,20 @@ def send_daily_summary():
     try:
         positions = api.list_positions()
         total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
-        # realized_pl is NOT present on Position, so we skip it
+
         lines = [
             f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}"
             for p in positions
         ]
+
         message = (
             "Open positions:\n" + "\n".join(lines) +
             f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\n"
         ) if positions else "No open positions."
 
-        # Optionally add account-level realized P&L
         try:
             account = api.get_account()
-            message += f"Account Equity: ${account.equity}\n"
+            message += f"\nAccount Equity: ${account.equity}"
         except Exception as e:
             logging.warning(f"[ACCOUNT] Unable to fetch account equity: {e}")
 
@@ -151,7 +151,8 @@ def send_daily_summary():
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
 
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+        with smtplib.SMTP('smtp.office365.com', 587) as server:
+            server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
         logging.info("[EMAIL] Daily summary sent.")
@@ -175,7 +176,7 @@ def run_bot():
                 latest = df.iloc[-1]
                 qty = None
 
-                # Buy signal logic
+                # Buy signal
                 if traded_today.get(symbol) != today:
                     if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
                         price = latest['close']
@@ -186,7 +187,7 @@ def run_bot():
                         else:
                             logging.warning(f"[ORDER] Not enough capital for {symbol}. Price: {price}")
 
-                # Sell signal logic: RSI overbought or stop-loss
+                # Sell signal
                 if symbol in open_positions and sold_today.get(symbol) != today:
                     position = open_positions[symbol]
                     qty = int(position.qty)
@@ -196,9 +197,8 @@ def run_bot():
                         place_order(symbol, qty, 'sell')
                         sold_today[symbol] = today
 
-            time.sleep(1)  # Prevent Alpaca API rate limit
+            time.sleep(1)  # Rate limit guard
 
-        # Daily summary after midnight
         if datetime.now().hour == 0 and last_summary_sent != today:
             send_daily_summary()
             last_summary_sent = today
