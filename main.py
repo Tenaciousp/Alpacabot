@@ -27,7 +27,6 @@ PAPER = os.getenv("PAPER", "true").lower() == "true"
 BASE_URL = "https://paper-api.alpaca.markets" if PAPER else "https://api.alpaca.markets"
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
@@ -40,23 +39,30 @@ api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 # === LOGGING SETUP ===
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
+# === GLOBALS ===
 traded_today = {}
 sold_today = {}
 trade_count_today = 0
 last_summary_sent = None
+bot_started = False
 
 # === FLASK SERVER ===
 app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "Alpaca RSI/EMA Bot is active."
+    global bot_started
+    if not bot_started:
+        logging.info("[FLASK] First HTTP ping — launching trading bot...")
+        bot_thread = Thread(target=run_bot, daemon=True)
+        bot_thread.start()
+        bot_started = True
+    return "Alpaca RSI/EMA Bot is active and running."
 
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
     with open(TRADE_LOG_FILE, "a") as f:
         f.write(f"{time_str},{action},{symbol},{qty},{price}\n")
-
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
@@ -207,11 +213,6 @@ def run_bot():
         logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
 
-def keep_alive():
-    app.run(host="0.0.0.0", port=8080)
-
+# === ENTRY POINT ===
 if __name__ == '__main__':
-    server_thread = Thread(target=keep_alive, daemon=True)
-    server_thread.start()
-    bot_thread = Thread(target=run_bot, daemon=False)
-    bot_thread.start()
+    app.run(host="0.0.0.0", port=8080)
