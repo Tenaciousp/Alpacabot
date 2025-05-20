@@ -54,7 +54,7 @@ def index():
     global bot_started
     if not bot_started:
         logging.info("[FLASK] First HTTP ping — launching trading bot...")
-        bot_thread = Thread(target=run_bot, daemon=True)
+        bot_thread = Thread(target=run_bot_loop, daemon=True)
         bot_thread.start()
         bot_started = True
     return "Alpaca RSI/EMA Bot is active and running."
@@ -177,6 +177,7 @@ def run_bot():
         open_positions = get_open_positions_dict()
 
         for symbol in SYMBOLS:
+            logging.info(f"[BOT] Checking {symbol}...")
             if traded_today.get(symbol) == today:
                 logging.info(f"[SKIP] {symbol} already traded today.")
                 continue
@@ -212,6 +213,15 @@ def run_bot():
 
         logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
+
+def run_bot_loop():
+    while True:
+        try:
+            run_bot()
+        except Exception as e:
+            logging.error(f"[BOT CRASH] Bot loop crashed: {e}")
+            logging.info("[BOT] Restarting in 60 seconds...")
+            time.sleep(60)
 
 # === ENTRY POINT ===
 if __name__ == '__main__':
