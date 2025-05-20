@@ -17,7 +17,7 @@ MAX_TRADE_DOLLARS = 50
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
 RSI_PERIOD = 14
 EMA_PERIOD = 9
-RSI_BUY = 35  # Changed from 30
+RSI_BUY = 35
 RSI_SELL = 70
 HARD_STOP_LOSS_PCT = 0.03
 MAX_TOTAL_TRADES_PER_DAY = 2
@@ -57,6 +57,10 @@ def index():
         bot_thread = Thread(target=run_bot_loop, daemon=True)
         bot_thread.start()
         bot_started = True
+    return "Bot running."
+
+@app.route('/health')
+def health_check():
     return "OK"
 
 def log_trade(action, symbol, qty, price):
