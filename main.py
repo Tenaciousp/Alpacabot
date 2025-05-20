@@ -57,7 +57,7 @@ def index():
         bot_thread = Thread(target=run_bot_loop, daemon=True)
         bot_thread.start()
         bot_started = True
-    return "Alpaca RSI/EMA Bot is active and running."
+    return "OK"
 
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
