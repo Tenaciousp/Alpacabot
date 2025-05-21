@@ -51,12 +51,6 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    global bot_started
-    if not bot_started:
-        logging.info("[FLASK] First HTTP ping — launching trading bot...")
-        bot_thread = Thread(target=run_bot_loop, daemon=True)
-        bot_thread.start()
-        bot_started = True
     return "Bot running."
 
 @app.route('/health')
@@ -229,4 +223,5 @@ def run_bot_loop():
 
 # === ENTRY POINT ===
 if __name__ == '__main__':
+    Thread(target=run_bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
