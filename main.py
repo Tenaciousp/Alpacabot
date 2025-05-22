@@ -44,7 +44,6 @@ traded_today = {}
 sold_today = {}
 trade_count_today = 0
 last_summary_sent = None
-bot_started = False
 
 # === FLASK SERVER ===
 app = Flask(__name__)
@@ -213,6 +212,7 @@ def run_bot():
         time.sleep(300)
 
 def run_bot_loop():
+    logging.info("[BOOT] Bot loop thread started.")
     while True:
         try:
             run_bot()
@@ -223,5 +223,6 @@ def run_bot_loop():
 
 # === ENTRY POINT ===
 if __name__ == '__main__':
+    logging.info("[BOOT] Starting Flask and Bot loop...")
     Thread(target=run_bot_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=8080)
