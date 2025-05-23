@@ -1,4 +1,3 @@
-# (unchanged imports)
 import os
 import time
 import logging
@@ -57,9 +56,113 @@ def index():
 def health_check():
     return "OK"
 
-# === BOT LOGIC FUNCTIONS (unchanged — not repeated for brevity) ===
-# Includes: log_trade, get_data, calculate_signals, place_order,
-# get_open_positions_dict, send_trade_email, send_daily_summary
+def log_trade(action, symbol, qty, price):
+    time_str = datetime.now().isoformat()
+    with open(TRADE_LOG_FILE, "a") as f:
+        f.write(f"{time_str},{action},{symbol},{qty},{price}\n")
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("Alpaca Trade Log").sheet1
+        sheet.append_row([time_str, action, symbol, qty, price])
+        logging.info(f"[GOOGLE SHEETS] Logged {action} {symbol} to Google Sheet.")
+    except Exception as e:
+        logging.error(f"[SHEETS ERROR] {e}")
+
+def get_data(symbol):
+    try:
+        barset = api.get_bars(symbol, '5Min', limit=100).df
+        if barset.empty or 'close' not in barset.columns:
+            logging.warning(f"[DATA] Invalid or missing 'close' data for {symbol}")
+            return None
+        return barset
+    except Exception as e:
+        logging.error(f"[DATA ERROR] {symbol}: {e}")
+        return None
+
+def calculate_signals(df):
+    try:
+        df['EMA'] = df['close'].ewm(span=EMA_PERIOD, adjust=False).mean()
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+        avg_loss = loss.rolling(window=RSI_PERIOD, min_periods=RSI_PERIOD).mean()
+        rs = avg_gain / avg_loss
+        df['RSI'] = 100 - (100 / (1 + rs))
+        return df
+    except Exception as e:
+        logging.error(f"[SIGNAL ERROR] {e}")
+        return df
+
+def place_order(symbol, qty, side):
+    global trade_count_today
+    try:
+        if trade_count_today >= MAX_TOTAL_TRADES_PER_DAY:
+            logging.info("[LIMIT] Max daily trades reached.")
+            return
+        api.submit_order(symbol=symbol, qty=qty, side=side, type='market', time_in_force='day')
+        price = api.get_last_trade(symbol).price
+        log_trade(side, symbol, qty, price)
+        send_trade_email(symbol, qty, side)
+        trade_count_today += 1
+        logging.info(f"[ORDER] {side.upper()} {qty} shares of {symbol} at ${price:.2f}")
+    except Exception as e:
+        logging.error(f"[ORDER ERROR] {symbol}: {e}")
+
+def get_open_positions_dict():
+    try:
+        return {p.symbol: p for p in api.list_positions()}
+    except Exception as e:
+        logging.error(f"[POSITION ERROR] {e}")
+        return {}
+
+def send_trade_email(symbol, qty, side):
+    try:
+        subject = f"Trade Alert: {side.upper()} {qty} {symbol}"
+        price = api.get_last_trade(symbol).price
+        message = f"{side.upper()} {qty} shares of {symbol} at ${price:.2f} on {datetime.now().isoformat()}."
+        msg = MIMEText(message)
+        msg['Subject'] = subject
+        msg['From'] = EMAIL_USER
+        msg['To'] = EMAIL_TO
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
+        logging.info(f"[EMAIL] Trade alert sent for {symbol}.")
+    except Exception as e:
+        logging.error(f"[EMAIL ERROR] {e}")
+
+def send_daily_summary():
+    global trade_count_today
+    try:
+        positions = api.list_positions()
+        total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
+        lines = [f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}" for p in positions]
+
+        message = (
+            "Open positions:\n" + "\n".join(lines) +
+            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\nTrades Executed Today: {trade_count_today}"
+        ) if positions else "No open positions."
+
+        account = api.get_account()
+        message += f"\nAccount Equity: ${account.equity}"
+
+        msg = MIMEText(message)
+        msg['Subject'] = 'Daily Alpaca Bot Summary'
+        msg['From'] = EMAIL_USER
+        msg['To'] = EMAIL_TO
+
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(EMAIL_USER, EMAIL_PASS)
+            server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
+        logging.info("[EMAIL] Daily summary sent.")
+        trade_count_today = 0
+    except Exception as e:
+        logging.error(f"[EMAIL ERROR] {e}")
 
 def run_bot():
     global last_summary_sent
@@ -116,9 +219,9 @@ def run_bot_loop():
     logging.info("[BOOT] Bot thread is now running...")
     run_bot()
 
-# === ENTRY POINT (non-daemon thread to ensure bot stays alive) ===
+# === ENTRY POINT ===
 if __name__ == '__main__':
     logging.info("[BOOT] Launching Flask and trading bot...")
-    bot_thread = Thread(target=run_bot_loop)
+    bot_thread = Thread(target=run_bot_loop)  # Not daemon = persistent
     bot_thread.start()
     app.run(host="0.0.0.0", port=8080)
