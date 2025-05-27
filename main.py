@@ -56,7 +56,7 @@ def index():
 def health_check():
     return "OK"
 
-# === CORE FUNCTIONS ===
+# === FUNCTIONS ===
 
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
@@ -160,16 +160,19 @@ def send_daily_summary():
 
 def run_bot():
     global last_summary_sent
+
     logging.info("[BOT] Starting RSI/EMA bot loop")
 
-    # Live account 403 detection
+    # Live account 403 detection with friendly retry
     try:
         acct = api.get_account()
         logging.info(f"[ACCOUNT] Mode: {'PAPER' if PAPER else 'LIVE'}, Equity: ${acct.equity}")
     except Exception as e:
         if "403" in str(e):
-            logging.error("[AUTH] Live account rejected: 403 Forbidden. Check if your deposit has cleared and KYC is approved.")
-            logging.warning("[BOT] Aborting trading loop until account is ready.")
+            logging.warning("[AUTH] Alpaca account is not ready yet (403 Forbidden).")
+            logging.warning("[BOT] Likely reasons: deposit not cleared, or KYC not approved.")
+            logging.info("[WAIT] Pausing bot for 6 hours before retrying...")
+            time.sleep(21600)  # 6 hours
             return
         else:
             raise
