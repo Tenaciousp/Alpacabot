@@ -13,7 +13,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 
 # === CONFIGURATION ===
-MAX_TRADE_DOLLARS = 50
+MAX_TRADE_DOLLARS = 20
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
 RSI_PERIOD = 14
 EMA_PERIOD = 9
@@ -35,9 +35,8 @@ GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
 # === INITIALISE API ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
-
-# === LOGGING SETUP ===
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
+logging.info(f"[MODE] {'PAPER' if PAPER else 'LIVE'} TRADING MODE ACTIVE")
 
 # === GLOBALS ===
 traded_today = {}
@@ -55,6 +54,8 @@ def index():
 @app.route('/health')
 def health_check():
     return "OK"
+
+# === FUNCTIONS ===
 
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
@@ -142,20 +143,13 @@ def send_daily_summary():
         positions = api.list_positions()
         total_unreal = sum([float(p.unrealized_pl) for p in positions]) if positions else 0
         lines = [f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price} | Unrealized: ${p.unrealized_pl}" for p in positions]
-
-        message = (
-            "Open positions:\n" + "\n".join(lines) +
-            f"\n\nTotal Unrealized P&L: ${total_unreal:.2f}\nTrades Executed Today: {trade_count_today}"
-        ) if positions else "No open positions."
-
+        message = "\n".join(lines) + f"\n\nUnrealized P&L: ${total_unreal:.2f}\nTrades Today: {trade_count_today}" if lines else "No open positions."
         account = api.get_account()
         message += f"\nAccount Equity: ${account.equity}"
-
         msg = MIMEText(message)
         msg['Subject'] = 'Daily Alpaca Bot Summary'
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
-
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
@@ -173,18 +167,15 @@ def run_bot():
             logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
             today = date.today()
             open_positions = get_open_positions_dict()
-
             for symbol in SYMBOLS:
                 logging.info(f"[BOT] Checking {symbol}...")
                 if traded_today.get(symbol) == today:
                     logging.info(f"[SKIP] {symbol} already traded today.")
                     continue
-
                 df = get_data(symbol)
                 if df is not None:
                     df = calculate_signals(df)
                     latest = df.iloc[-1]
-
                     if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
                         price = latest['close']
                         qty = int(MAX_TRADE_DOLLARS / price)
@@ -193,7 +184,6 @@ def run_bot():
                             traded_today[symbol] = today
                         else:
                             logging.warning(f"[ORDER] {symbol}: price too high for ${MAX_TRADE_DOLLARS}")
-
                     if symbol in open_positions and sold_today.get(symbol) != today:
                         position = open_positions[symbol]
                         qty = int(position.qty)
@@ -202,14 +192,11 @@ def run_bot():
                         if (latest['RSI'] > RSI_SELL) or (latest['close'] < stop_loss_price):
                             place_order(symbol, qty, 'sell')
                             sold_today[symbol] = today
-
             if datetime.now().hour == 0 and last_summary_sent != today:
                 send_daily_summary()
                 last_summary_sent = today
-
             logging.info("[BOT] Sleeping 5 minutes...")
             time.sleep(300)
-
         except Exception as e:
             logging.error(f"[BOT LOOP ERROR] {e}")
             logging.info("[BOT] Sleeping 60 seconds before retry...")
@@ -219,9 +206,8 @@ def run_bot_loop():
     logging.info("[BOOT] Bot thread is now running...")
     run_bot()
 
-# === ENTRY POINT ===
 if __name__ == '__main__':
     logging.info("[BOOT] Launching Flask and trading bot...")
-    bot_thread = Thread(target=run_bot_loop)  # Not daemon = persistent
+    bot_thread = Thread(target=run_bot_loop)
     bot_thread.start()
     app.run(host="0.0.0.0", port=8080)
