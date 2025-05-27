@@ -1,3 +1,4 @@
+# === IMPORTS ===
 import os
 import time
 import logging
@@ -49,13 +50,13 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "Bot running."
+    return "Alpaca bot is live."
 
 @app.route('/health')
 def health_check():
     return "OK"
 
-# === FUNCTIONS ===
+# === CORE FUNCTIONS ===
 
 def log_trade(action, symbol, qty, price):
     time_str = datetime.now().isoformat()
@@ -129,7 +130,6 @@ def send_trade_email(symbol, qty, side):
         msg['Subject'] = subject
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
-
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
@@ -161,21 +161,38 @@ def send_daily_summary():
 def run_bot():
     global last_summary_sent
     logging.info("[BOT] Starting RSI/EMA bot loop")
+
+    # Live account 403 detection
+    try:
+        acct = api.get_account()
+        logging.info(f"[ACCOUNT] Mode: {'PAPER' if PAPER else 'LIVE'}, Equity: ${acct.equity}")
+    except Exception as e:
+        if "403" in str(e):
+            logging.error("[AUTH] Live account rejected: 403 Forbidden. Check if your deposit has cleared and KYC is approved.")
+            logging.warning("[BOT] Aborting trading loop until account is ready.")
+            return
+        else:
+            raise
+
     send_daily_summary()
+
     while True:
         try:
             logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
             today = date.today()
             open_positions = get_open_positions_dict()
+
             for symbol in SYMBOLS:
                 logging.info(f"[BOT] Checking {symbol}...")
                 if traded_today.get(symbol) == today:
                     logging.info(f"[SKIP] {symbol} already traded today.")
                     continue
+
                 df = get_data(symbol)
                 if df is not None:
                     df = calculate_signals(df)
                     latest = df.iloc[-1]
+
                     if (latest['RSI'] < RSI_BUY) and (latest['close'] > latest['EMA']):
                         price = latest['close']
                         qty = int(MAX_TRADE_DOLLARS / price)
@@ -184,6 +201,7 @@ def run_bot():
                             traded_today[symbol] = today
                         else:
                             logging.warning(f"[ORDER] {symbol}: price too high for ${MAX_TRADE_DOLLARS}")
+
                     if symbol in open_positions and sold_today.get(symbol) != today:
                         position = open_positions[symbol]
                         qty = int(position.qty)
@@ -192,11 +210,14 @@ def run_bot():
                         if (latest['RSI'] > RSI_SELL) or (latest['close'] < stop_loss_price):
                             place_order(symbol, qty, 'sell')
                             sold_today[symbol] = today
+
             if datetime.now().hour == 0 and last_summary_sent != today:
                 send_daily_summary()
                 last_summary_sent = today
+
             logging.info("[BOT] Sleeping 5 minutes...")
             time.sleep(300)
+
         except Exception as e:
             logging.error(f"[BOT LOOP ERROR] {e}")
             logging.info("[BOT] Sleeping 60 seconds before retry...")
