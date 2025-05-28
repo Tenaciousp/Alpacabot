@@ -9,12 +9,10 @@ from email.mime.text import MIMEText
 import alpaca_trade_api as tradeapi
 import pandas as pd
 
-# === CONFIGURATION ===
+# === CONFIG ===
 MAX_TRADE_DOLLARS = 20
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
-RSI_PERIOD = 14
-EMA_PERIOD = 9
-RSI_THRESHOLD = 30
+RSI_THRESHOLD = 30  # Still used for placeholder logic
 
 # === ENV VARS ===
 API_KEY = os.getenv("APCA_API_KEY_ID")
@@ -25,7 +23,7 @@ EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-# === INITIALISE API ===
+# === INIT ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 # === LOGGING ===
@@ -38,49 +36,38 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "Alpaca Live Bot is running."
+    return "Alpaca Bot (Real-Time Fallback) is running."
 
 @app.route('/health')
 def health():
     return "OK"
 
-def get_data(symbol):
+# === DATA FETCH: Using get_latest_trade() ===
+def get_latest_price(symbol):
     try:
-        barset = api.get_bars(symbol, '5Min', limit=100, feed='iex').df
-        if barset.empty or 'close' not in barset.columns:
-            logging.warning(f"[DATA] No close data for {symbol}")
-            return None
-        return barset
+        trade = api.get_latest_trade(symbol)
+        logging.info(f"[DATA] {symbol} latest price: ${trade.price:.2f}")
+        return trade.price
     except Exception as e:
         logging.error(f"[DATA ERROR] {symbol}: {e}")
         return None
 
-def signal(df):
+# === FAKE SIGNAL: fallback logic just checks if price dropped below RSI_THRESHOLD for example's sake ===
+def simple_signal(price):
     try:
-        df['EMA'] = df['close'].ewm(span=EMA_PERIOD).mean()
-        delta = df['close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=RSI_PERIOD).mean()
-        avg_loss = loss.rolling(window=RSI_PERIOD).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        latest = df.iloc[-1]
-        logging.info(f"[SIGNAL] {latest.name} | Close: {latest['close']:.2f}, EMA: {latest['EMA']:.2f}, RSI: {latest['RSI']:.2f}")
-        return latest['RSI'] < RSI_THRESHOLD and latest['close'] > latest['EMA']
-    except Exception as e:
-        logging.error(f"[SIGNAL ERROR] {e}")
+        return price < RSI_THRESHOLD  # crude placeholder for demo/testing
+    except:
         return False
 
 def place_order(symbol, dollars):
     try:
-        price = api.get_last_trade(symbol).price
+        price = api.get_latest_trade(symbol).price
         qty = int(dollars / price)
         if qty > 0:
             api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
             logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ~${price:.2f}")
         else:
-            logging.warning(f"[ORDER] Skipped — ${dollars} too low to buy {symbol} at ${price:.2f}")
+            logging.warning(f"[ORDER] Skipped {symbol} — ${dollars} too low to buy at ${price:.2f}")
     except Exception as e:
         logging.error(f"[ORDER ERROR] {symbol}: {e}")
 
@@ -90,7 +77,7 @@ def get_open_positions():
         for p in positions:
             logging.info(f"[POSITION] {p.symbol}: {p.qty} @ ${p.avg_entry_price}")
     except Exception as e:
-        logging.warning(f"[POSITION ERROR] Could not fetch positions: {e}")
+        logging.warning(f"[POSITION ERROR] Could not fetch: {e}")
 
 def send_daily_summary():
     try:
@@ -109,25 +96,25 @@ def send_daily_summary():
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
+# === MAIN LOOP ===
 def run_bot():
     global last_summary_sent
-    logging.info("[BOT] Live bot loop started.")
+    logging.info("[BOT] Starting Alpaca Bot (Realtime Fallback Mode)")
     while True:
-        logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
+        logging.info(f"[TICK] {datetime.now().isoformat()}")
         today = date.today()
 
         for symbol in SYMBOLS:
             if traded_today.get(symbol) == today:
-                logging.info(f"[BOT] {symbol} already traded today.")
+                logging.info(f"[SKIP] {symbol} already traded today.")
                 continue
 
-            logging.info(f"[BOT] Checking {symbol}")
-            df = get_data(symbol)
-            if df is not None and signal(df):
+            price = get_latest_price(symbol)
+            if price and simple_signal(price):
                 place_order(symbol, MAX_TRADE_DOLLARS)
                 traded_today[symbol] = today
             else:
-                logging.info(f"[BOT] No buy signal for {symbol}.")
+                logging.info(f"[BOT] No signal for {symbol}.")
 
         get_open_positions()
 
@@ -135,7 +122,7 @@ def run_bot():
             send_daily_summary()
             last_summary_sent = today
 
-        logging.info("[BOT] Sleeping 5 minutes...")
+        logging.info("[SLEEP] 5 minutes...")
         time.sleep(300)
 
 def keep_alive():
