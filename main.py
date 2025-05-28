@@ -16,26 +16,24 @@ RSI_PERIOD = 14
 EMA_PERIOD = 9
 RSI_THRESHOLD = 30
 
-# === ENVIRONMENT VARIABLES ===
+# === ENV VARS ===
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL")  # Live: https://api.alpaca.markets
+BASE_URL = os.getenv("APCA_API_BASE_URL")
 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-# === INITIALIZE API ===
+# === INITIALISE API ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
-# === LOGGING SETUP ===
+# === LOGGING ===
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
-# === TRACKERS ===
 traded_today = {}
 last_summary_sent = None
 
-# === FLASK SERVER ===
 app = Flask(__name__)
 
 @app.route('/')
@@ -46,11 +44,9 @@ def index():
 def health():
     return "OK"
 
-# === CORE FUNCTIONS ===
-
 def get_data(symbol):
     try:
-        barset = api.get_bars(symbol, '5Min', limit=100).df
+        barset = api.get_bars(symbol, '5Min', limit=100, feed='iex').df
         if barset.empty or 'close' not in barset.columns:
             logging.warning(f"[DATA] No close data for {symbol}")
             return None
@@ -94,7 +90,7 @@ def get_open_positions():
         for p in positions:
             logging.info(f"[POSITION] {p.symbol}: {p.qty} @ ${p.avg_entry_price}")
     except Exception as e:
-        logging.error(f"[POSITION ERROR] {e}")
+        logging.warning(f"[POSITION ERROR] Could not fetch positions: {e}")
 
 def send_daily_summary():
     try:
@@ -109,14 +105,13 @@ def send_daily_summary():
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
 
-        logging.info("[EMAIL] Summary sent successfully.")
+        logging.info("[EMAIL] Daily summary sent.")
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
-# === BOT LOOP ===
 def run_bot():
     global last_summary_sent
-    logging.info("[BOT] Live trading bot loop started.")
+    logging.info("[BOT] Live bot loop started.")
     while True:
         logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
         today = date.today()
@@ -143,7 +138,6 @@ def run_bot():
         logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
 
-# === SERVER START ===
 def keep_alive():
     app.run(host="0.0.0.0", port=8080)
 
