@@ -16,16 +16,16 @@ RSI_PERIOD = 14
 EMA_PERIOD = 9
 RSI_THRESHOLD = 30
 
-# === ENV VARS ===
+# === ENVIRONMENT VARIABLES ===
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL", "https://api.alpaca.markets")  # change to paper URL if testing
+BASE_URL = os.getenv("APCA_API_BASE_URL")  # Live: https://api.alpaca.markets
 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
 
-# === INITIALISE API ===
+# === INITIALIZE API ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
 
 # === LOGGING SETUP ===
@@ -40,19 +40,19 @@ app = Flask(__name__)
 
 @app.route('/')
 def index():
-    return "Alpaca RSI/EMA Bot is active."
+    return "Alpaca Live Bot is running."
 
 @app.route('/health')
 def health():
     return "OK"
 
-# === FUNCTIONS ===
+# === CORE FUNCTIONS ===
 
 def get_data(symbol):
     try:
         barset = api.get_bars(symbol, '5Min', limit=100).df
         if barset.empty or 'close' not in barset.columns:
-            logging.warning(f"[DATA] No close prices for {symbol}")
+            logging.warning(f"[DATA] No close data for {symbol}")
             return None
         return barset
     except Exception as e:
@@ -70,7 +70,7 @@ def signal(df):
         rs = avg_gain / avg_loss
         df['RSI'] = 100 - (100 / (1 + rs))
         latest = df.iloc[-1]
-        logging.info(f"[SIGNAL] RSI={latest['RSI']:.2f}, EMA={latest['EMA']:.2f}, Close={latest['close']:.2f}")
+        logging.info(f"[SIGNAL] {latest.name} | Close: {latest['close']:.2f}, EMA: {latest['EMA']:.2f}, RSI: {latest['RSI']:.2f}")
         return latest['RSI'] < RSI_THRESHOLD and latest['close'] > latest['EMA']
     except Exception as e:
         logging.error(f"[SIGNAL ERROR] {e}")
@@ -82,17 +82,17 @@ def place_order(symbol, dollars):
         qty = int(dollars / price)
         if qty > 0:
             api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-            logging.info(f"[ORDER] Placed BUY for {qty} shares of {symbol} at ~${price:.2f}")
+            logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ~${price:.2f}")
         else:
-            logging.warning(f"[ORDER] Trade skipped — ${dollars} insufficient for {symbol} at ${price:.2f}")
+            logging.warning(f"[ORDER] Skipped — ${dollars} too low to buy {symbol} at ${price:.2f}")
     except Exception as e:
         logging.error(f"[ORDER ERROR] {symbol}: {e}")
 
 def get_open_positions():
     try:
         positions = api.list_positions()
-        for pos in positions:
-            logging.info(f"[POSITION] {pos.symbol}: {pos.qty} @ ${pos.avg_entry_price}")
+        for p in positions:
+            logging.info(f"[POSITION] {p.symbol}: {p.qty} @ ${p.avg_entry_price}")
     except Exception as e:
         logging.error(f"[POSITION ERROR] {e}")
 
@@ -101,7 +101,7 @@ def send_daily_summary():
         positions = api.list_positions()
         message = "\n".join([f"{p.symbol}: {p.qty} @ ${p.avg_entry_price}" for p in positions]) or "No open positions."
         msg = MIMEText(message)
-        msg['Subject'] = 'Daily Alpaca Bot Summary'
+        msg['Subject'] = 'Alpaca Bot Daily Summary'
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
 
@@ -109,14 +109,14 @@ def send_daily_summary():
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
 
-        logging.info("[EMAIL] Summary sent.")
+        logging.info("[EMAIL] Summary sent successfully.")
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
-# === MAIN BOT LOOP ===
+# === BOT LOOP ===
 def run_bot():
     global last_summary_sent
-    logging.info("[BOT] Starting RSI/EMA bot loop")
+    logging.info("[BOT] Live trading bot loop started.")
     while True:
         logging.info(f"[BOT LOOP] Tick at {datetime.now().isoformat()}")
         today = date.today()
@@ -132,7 +132,7 @@ def run_bot():
                 place_order(symbol, MAX_TRADE_DOLLARS)
                 traded_today[symbol] = today
             else:
-                logging.info(f"[BOT] No signal for {symbol}.")
+                logging.info(f"[BOT] No buy signal for {symbol}.")
 
         get_open_positions()
 
@@ -143,13 +143,10 @@ def run_bot():
         logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
 
-# === START ===
+# === SERVER START ===
 def keep_alive():
     app.run(host="0.0.0.0", port=8080)
 
 if __name__ == '__main__':
-    server_thread = Thread(target=keep_alive)
-    server_thread.start()
-
-    bot_thread = Thread(target=run_bot)
-    bot_thread.start()
+    Thread(target=keep_alive).start()
+    Thread(target=run_bot).start()
