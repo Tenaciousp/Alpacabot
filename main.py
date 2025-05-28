@@ -7,17 +7,15 @@ from flask import Flask
 import smtplib
 from email.mime.text import MIMEText
 import alpaca_trade_api as tradeapi
-import pandas as pd
 
-# === CONFIG ===
+# === CONFIGURATION ===
 MAX_TRADE_DOLLARS = 20
 SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
-RSI_THRESHOLD = 30  # Still used for placeholder logic
 
-# === ENV VARS ===
+# === ENVIRONMENT VARIABLES ===
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
-BASE_URL = os.getenv("APCA_API_BASE_URL")
+BASE_URL = os.getenv("APCA_API_BASE_URL", "https://api.alpaca.markets")
 
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
@@ -25,109 +23,89 @@ EMAIL_TO = os.getenv("EMAIL_TO")
 
 # === INIT ===
 api = tradeapi.REST(API_KEY, API_SECRET, BASE_URL, api_version='v2')
-
-# === LOGGING ===
+app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
 
 traded_today = {}
 last_summary_sent = None
 
-app = Flask(__name__)
-
 @app.route('/')
 def index():
-    return "Alpaca Bot (Real-Time Fallback) is running."
+    return "Alpaca free-tier trading bot is live."
 
-@app.route('/health')
-def health():
-    return "OK"
+# === CORE FUNCTIONS ===
 
-# === DATA FETCH: Using get_latest_trade() ===
 def get_latest_price(symbol):
     try:
-        trade = api.get_latest_trade(symbol)
-        logging.info(f"[DATA] {symbol} latest price: ${trade.price:.2f}")
-        return trade.price
+        quote = api.get_latest_quote(symbol)
+        return quote.ask_price
     except Exception as e:
-        logging.error(f"[DATA ERROR] {symbol}: {e}")
+        logging.warning(f"[QUOTE ERROR] {symbol}: {e}")
         return None
 
-# === FAKE SIGNAL: fallback logic just checks if price dropped below RSI_THRESHOLD for example's sake ===
-def simple_signal(price):
-    try:
-        return price < RSI_THRESHOLD  # crude placeholder for demo/testing
-    except:
-        return False
+def should_trade_now(symbol):
+    # Simulated strategy: trade every 15 minutes if not yet traded today
+    now = datetime.now()
+    return now.minute % 15 == 0
 
 def place_order(symbol, dollars):
     try:
-        price = api.get_latest_trade(symbol).price
+        price = get_latest_price(symbol)
+        if not price or price <= 0:
+            logging.warning(f"[ORDER] Skipping {symbol}, invalid price.")
+            return
         qty = int(dollars / price)
-        if qty > 0:
-            api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-            logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ~${price:.2f}")
-        else:
-            logging.warning(f"[ORDER] Skipped {symbol} — ${dollars} too low to buy at ${price:.2f}")
+        if qty < 1:
+            logging.info(f"[ORDER] Skipping {symbol}, not enough funds to buy minimum qty.")
+            return
+        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+        logging.info(f"[ORDER] Buy {qty} x {symbol} at ${price:.2f}")
     except Exception as e:
         logging.error(f"[ORDER ERROR] {symbol}: {e}")
 
-def get_open_positions():
+def send_summary():
     try:
         positions = api.list_positions()
-        for p in positions:
-            logging.info(f"[POSITION] {p.symbol}: {p.qty} @ ${p.avg_entry_price}")
-    except Exception as e:
-        logging.warning(f"[POSITION ERROR] Could not fetch: {e}")
-
-def send_daily_summary():
-    try:
-        positions = api.list_positions()
-        message = "\n".join([f"{p.symbol}: {p.qty} @ ${p.avg_entry_price}" for p in positions]) or "No open positions."
+        message = "\n".join([f"{p.symbol}: {p.qty} shares @ ${p.avg_entry_price}" for p in positions]) or "No open positions."
         msg = MIMEText(message)
-        msg['Subject'] = 'Alpaca Bot Daily Summary'
+        msg['Subject'] = "Daily Alpaca Bot Summary"
         msg['From'] = EMAIL_USER
         msg['To'] = EMAIL_TO
-
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
             server.login(EMAIL_USER, EMAIL_PASS)
             server.sendmail(EMAIL_USER, EMAIL_TO, msg.as_string())
-
-        logging.info("[EMAIL] Daily summary sent.")
+        logging.info("[EMAIL] Summary sent.")
     except Exception as e:
         logging.error(f"[EMAIL ERROR] {e}")
 
-# === MAIN LOOP ===
+# === BOT LOOP ===
+
 def run_bot():
     global last_summary_sent
-    logging.info("[BOT] Starting Alpaca Bot (Realtime Fallback Mode)")
+    logging.info("[BOT] Starting main loop")
     while True:
-        logging.info(f"[TICK] {datetime.now().isoformat()}")
-        today = date.today()
-
+        now = datetime.now()
         for symbol in SYMBOLS:
-            if traded_today.get(symbol) == today:
-                logging.info(f"[SKIP] {symbol} already traded today.")
+            if traded_today.get(symbol) == date.today():
+                logging.info(f"[BOT] {symbol} already traded today.")
                 continue
-
-            price = get_latest_price(symbol)
-            if price and simple_signal(price):
+            if should_trade_now(symbol):
                 place_order(symbol, MAX_TRADE_DOLLARS)
-                traded_today[symbol] = today
+                traded_today[symbol] = date.today()
             else:
                 logging.info(f"[BOT] No signal for {symbol}.")
-
-        get_open_positions()
-
-        if datetime.now().hour == 0 and last_summary_sent != today:
-            send_daily_summary()
-            last_summary_sent = today
-
-        logging.info("[SLEEP] 5 minutes...")
+        if now.hour == 0 and last_summary_sent != date.today():
+            send_summary()
+            last_summary_sent = date.today()
+        logging.info("[BOT] Sleeping 5 minutes...")
         time.sleep(300)
+
+# === SERVER KEEPALIVE ===
 
 def keep_alive():
     app.run(host="0.0.0.0", port=8080)
 
+# === ENTRYPOINT ===
 if __name__ == '__main__':
     Thread(target=keep_alive).start()
     Thread(target=run_bot).start()
