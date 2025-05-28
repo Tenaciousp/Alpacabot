@@ -8,10 +8,11 @@ import smtplib
 from email.mime.text import MIMEText
 import alpaca_trade_api as tradeapi
 import pandas as pd
+from functools import wraps
 
 # === CONFIGURATION ===
 MAX_TRADE_DOLLARS = 20
-SYMBOLS = ['AAPL', 'TSLA', 'MSFT']
+SYMBOLS = ['AAPL', 'TSLA', 'MSFT', 'NVDA', 'GOOGL']
 RSI_PERIOD = 14
 EMA_PERIOD = 9
 RSI_THRESHOLD = 40
@@ -20,7 +21,6 @@ RSI_THRESHOLD = 40
 API_KEY = os.getenv("APCA_API_KEY_ID")
 API_SECRET = os.getenv("APCA_API_SECRET_KEY")
 BASE_URL = os.getenv("APCA_API_BASE_URL", "https://paper-api.alpaca.markets")
-
 EMAIL_USER = os.getenv("EMAIL_USER")
 EMAIL_PASS = os.getenv("EMAIL_PASS")
 EMAIL_TO = os.getenv("EMAIL_TO")
@@ -46,18 +46,30 @@ def index():
 def health():
     return "OK"
 
+# === RETRY DECORATOR ===
+def retry_on_exception(retries=3, delay=2):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for i in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    logging.warning(f"[RETRY] Attempt {i+1}/{retries} failed: {e}")
+                    time.sleep(delay)
+            logging.error(f"[FAIL] {func.__name__} failed after {retries} retries.")
+        return wrapper
+    return decorator
+
 # === FUNCTIONS ===
 
+@retry_on_exception()
 def get_data(symbol):
-    try:
-        barset = api.get_bars(symbol, '5Min', limit=100).df
-        if barset.empty or 'close' not in barset.columns:
-            logging.warning(f"[DATA] Invalid data for {symbol}")
-            return None
-        return barset
-    except Exception as e:
-        logging.error(f"[DATA ERROR] {symbol}: {e}")
+    barset = api.get_bars(symbol, '5Min', limit=100).df
+    if barset.empty or 'close' not in barset.columns:
+        logging.warning(f"[DATA] Invalid data for {symbol}")
         return None
+    return barset
 
 def signal(df, symbol):
     try:
@@ -82,25 +94,21 @@ def signal(df, symbol):
         logging.error(f"[SIGNAL ERROR] {symbol}: {e}")
         return False
 
+@retry_on_exception()
 def place_order(symbol, dollars):
-    try:
-        price = api.get_last_trade(symbol).price
-        qty = int(dollars / price)
-        if qty > 0:
-            api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
-            logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ${price}")
-        else:
-            logging.warning(f"[ORDER] Skipped {symbol}: insufficient funds for price ${price}")
-    except Exception as e:
-        logging.error(f"[ORDER ERROR] {symbol}: {e}")
+    price = api.get_last_trade(symbol).price
+    qty = int(dollars / price)
+    if qty > 0:
+        api.submit_order(symbol=symbol, qty=qty, side='buy', type='market', time_in_force='day')
+        logging.info(f"[ORDER] Placed BUY order for {qty} shares of {symbol} at ${price}")
+    else:
+        logging.warning(f"[ORDER] Skipped {symbol}: insufficient funds for price ${price}")
 
+@retry_on_exception()
 def get_open_positions():
-    try:
-        positions = api.list_positions()
-        for pos in positions:
-            logging.info(f"[POSITION] {pos.symbol}: {pos.qty} shares at ${pos.avg_entry_price}")
-    except Exception as e:
-        logging.error(f"[POSITION ERROR] {e}")
+    positions = api.list_positions()
+    for pos in positions:
+        logging.info(f"[POSITION] {pos.symbol}: {pos.qty} shares at ${pos.avg_entry_price}")
 
 def send_daily_summary():
     try:
